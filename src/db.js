@@ -5,11 +5,8 @@ dotenv.config();
 const { Pool } = pkg;
 
 const databaseConfig = {
-    connectionString: process.env.DATABASE_URL,
-    ssl: {
-        rejectUnauthorized: false
-    }
-}
+	connectionString: process.env.DATABASE_URL,
+};
 
 const connection = new Pool(databaseConfig);
 

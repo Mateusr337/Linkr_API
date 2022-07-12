@@ -5,258 +5,252 @@ import { postsRepository } from '../repositories/postsRepository.js';
 import { selectFollowingsUsers } from '../repositories/followsRepository.js';
 
 export async function publishPosts(req, res) {
-    const {userId, link, description} = req.body;
+	const { userId, link, description } = req.body;
 
-    const descriptionResolve = addSpaceHashtagsStuck(description);
+	const descriptionResolve = addSpaceHashtagsStuck(description);
 
-    const hashtags = (descriptionResolve.includes("#") ? (
-        descriptionResolve.match(/#[^\s#\.\;]*/gmi).map(x => x.substr(1).toLowerCase()) 
-    ) : []);
+	const hashtags = descriptionResolve.includes('#')
+		? descriptionResolve
+				.match(/#[^\s#\.\;]*/gim)
+				.map((x) => x.substr(1).toLowerCase())
+		: [];
 
-    try {
-        const {image, description: descriptionLink, title} = await urlMetadata(link);
+	try {
+		const { image, description: descriptionLink, title } = await urlMetadata(link);
 
-        const { rows: postId } = await postsRepository.publishPosts(userId, link, descriptionResolve, descriptionLink, image, title);
+		const { rows: postId } = await postsRepository.publishPosts(
+			userId,
+			link,
+			descriptionResolve,
+			descriptionLink,
+			image,
+			title
+		);
 
-        await insertHashtags(hashtags, postId[0].id);
+		await insertHashtags(hashtags, postId[0].id);
 
-        res.sendStatus(201);
-
-    } catch (error) {
-        console.log(error.message);
-        res.sendStatus(500);
-    }
+		res.sendStatus(201);
+	} catch (error) {
+		console.log(error.message);
+		res.sendStatus(500);
+	}
 }
 
 export async function getPosts(req, res) {
+	const { userId } = res.locals;
+	const { hashtag, lastIndex } = req.query;
+	let result = null;
+	let resultReposts = null;
 
-    const { userId } = res.locals;
-    const { hashtag, lastIndex } = req.query;
-    let result = null;
-    let resultReposts = null;
+	try {
+		let followings = await selectFollowingsUsers(userId);
 
-    try {
-        let followings = await selectFollowingsUsers(userId);
+		followings = followings.rows.map((following) => following.following);
 
-        followings = followings.rows.map(following => following.following);
+		if (hashtag) {
+			result = await postsRepository.getPostByHashtag(hashtag);
+			return res.send(result.rows);
+		} else {
+			result = await postsRepository.getPosts();
+			resultReposts = await postsRepository.getAllReposts();
+		}
 
-        if(hashtag)
-        {
-            result = await postsRepository.getPostByHashtag(hashtag);
-            if (result.rows.length === 0) return res.send([]);
+		const totalPosts = [...result.rows, ...resultReposts.rows];
 
-            const lastIdResult = result.rows[result.rows.length - 1]?.id;
-            const limitPosts = result.rows.splice(lastIndex, 10);
-            const lastIdLimitPosts = limitPosts[limitPosts.length - 1]?.id;
-            const compare = lastIdLimitPosts === lastIdResult;
-            const hasMore = (compare ? false : true);
+		const orderedPosts = totalPosts.sort(function (a, b) {
+			if (a.createDate < b.createDate) {
+				return 1;
+			}
+			if (a.createDate > b.createDate) {
+				return -1;
+			}
+			return 0;
+		});
 
-            return res.send({limitPosts, hasMore});
-        }
-        else
-        {
-            result = await postsRepository.getPosts();
-            resultReposts = await postsRepository.getAllReposts();
-        }
+		if (orderedPosts.length === 0) return res.send([]);
+		const posts = orderedPosts.filter((post) =>
+			!post.userRepostId
+				? followings.includes(post.userId) || post.userId === userId
+				: followings.includes(post.userRepostId) || post.userRepostId === userId
+		);
 
-        const totalPosts = [...result.rows, ...resultReposts.rows];
-
-        const orderedPosts = totalPosts.sort(function (a, b) {
-            if (a.createDate < b.createDate) {
-                return 1;
-            }
-            if (a.createDate > b.createDate) {
-                return -1;
-            }
-            return 0;
-        });
-
-        if(result.rows.length === 0) return res.send([]);
-        const posts = orderedPosts.filter(post => !post.userRepostId ? followings.includes(post.userId) || post.userId === userId : followings.includes(post.userRepostId) || post.userRepostId === userId);
-        const lastIdPosts = posts[posts.length - 1]?.id;
-        const limitPosts = posts.splice(lastIndex, 10);
-        const lastIdLimitPosts = limitPosts[limitPosts.length - 1]?.id;
-
-        const compare = lastIdPosts === lastIdLimitPosts;
-        const hasMore = (compare ? false : true);
-
-        res.send({limitPosts, hasMore});
-
-    } catch (error) {
-        console.log(error.message);
-        res.sendStatus(500);
-    }
-
+		res.send(orderedPosts);
+	} catch (error) {
+		console.log(error.message);
+		res.sendStatus(500);
+	}
 }
 
 export async function like(req, res) {
-    const userId = req.body.userId;
-    const postId = req.body.postId;
+	const userId = req.body.userId;
+	const postId = req.body.postId;
 
-    try {
-        const isLiked = await postsRepository.isLiked(postId, userId);
-        
-        if(isLiked.rows.length === 0) {
-            
-            await postsRepository.insertLike(userId, postId);
+	try {
+		const isLiked = await postsRepository.isLiked(postId, userId);
 
-            return res.sendStatus(201)
-        }
+		if (isLiked.rows.length === 0) {
+			await postsRepository.insertLike(userId, postId);
 
-        await postsRepository.deleteLike(userId, postId);
+			return res.sendStatus(201);
+		}
 
-        res.sendStatus(201)
-            
-    } catch (error) {
-        res.sendStatus(500)
-    }
+		await postsRepository.deleteLike(userId, postId);
+
+		res.sendStatus(201);
+	} catch (error) {
+		res.sendStatus(500);
+	}
 }
 
 export async function getLike(req, res) {
-    const { postId } = req.params;
-    const userId = res.locals.userId;
-    let isLiked = false;
+	const { postId } = req.params;
+	const userId = res.locals.userId;
+	let isLiked = false;
 
-    try {
-        
-        const likes = await postsRepository.selectLikes(postId);
+	try {
+		const likes = await postsRepository.selectLikes(postId);
 
-        const userLike = await postsRepository.userLikes(postId, userId);
+		const userLike = await postsRepository.userLikes(postId, userId);
 
-        const whoLiked = await postsRepository.whoLiked(postId);
+		const whoLiked = await postsRepository.whoLiked(postId);
 
-        if(likes.rows.length === 0 ) { 
-            return res.send([{ 
-                postId: parseInt(postId), 
-                count: 0, 
-                isLiked: isLiked, 
-                whoLiked: `Seja o primeiro <br/> a curtir!`}])
-        }
+		if (likes.rows.length === 0) {
+			return res.send([
+				{
+					postId: parseInt(postId),
+					count: 0,
+					isLiked: isLiked,
+					whoLiked: `Seja o primeiro <br/> a curtir!`,
+				},
+			]);
+		}
 
-        if (whoLiked.rows.length === 1) { 
-            if (userLike.rows.length !== 0) { 
-                isLiked = true;
-                likes.rows[0].isLiked = isLiked;
-                likes.rows[0].whoLiked = 'Você';
+		if (whoLiked.rows.length === 1) {
+			if (userLike.rows.length !== 0) {
+				isLiked = true;
+				likes.rows[0].isLiked = isLiked;
+				likes.rows[0].whoLiked = 'Você';
 
-                return res.send(likes.rows)
-            } else {
-                likes.rows[0].isLiked = isLiked;
-                likes.rows[0].whoLiked = `${whoLiked.rows[0].userName}`;
+				return res.send(likes.rows);
+			} else {
+				likes.rows[0].isLiked = isLiked;
+				likes.rows[0].whoLiked = `${whoLiked.rows[0].userName}`;
 
-                return res.send(likes.rows)
-            }
-        }
+				return res.send(likes.rows);
+			}
+		}
 
-        if (whoLiked.rows.length === 2) { 
-            if (userLike.rows.length !== 0) { 
-                isLiked = true;
-                likes.rows[0].isLiked = isLiked;
+		if (whoLiked.rows.length === 2) {
+			if (userLike.rows.length !== 0) {
+				isLiked = true;
+				likes.rows[0].isLiked = isLiked;
 
-                let other;
-                if(whoLiked.rows[0].id === userId) {
-                    other = whoLiked.rows[1].userName;
-                } else {
-                    other = whoLiked.rows[0].userName;
-                }
-            
-                likes.rows[0].whoLiked = `Você e ${other}`;
+				let other;
+				if (whoLiked.rows[0].id === userId) {
+					other = whoLiked.rows[1].userName;
+				} else {
+					other = whoLiked.rows[0].userName;
+				}
 
-                return res.send(likes.rows)
-            } else { 
-                likes.rows[0].isLiked = isLiked;
-                likes.rows[0].whoLiked = `${whoLiked.rows[0].userName} e ${whoLiked.rows[1].userName}`;
+				likes.rows[0].whoLiked = `Você e ${other}`;
 
-                return res.send(likes.rows)
-            }
-        }
+				return res.send(likes.rows);
+			} else {
+				likes.rows[0].isLiked = isLiked;
+				likes.rows[0].whoLiked = `${whoLiked.rows[0].userName} e ${whoLiked.rows[1].userName}`;
 
-        if (whoLiked.rows.length > 2) { 
-            if (userLike.rows.length !== 0) { 
-                isLiked = true;
-                likes.rows[0].isLiked = isLiked;
-                
-                let other;
-                if (whoLiked.rows[0].id === userId) {
-                    other = whoLiked.rows[1].userName;
-                } else {
-                    other = whoLiked.rows[0].userName;
-                }
+				return res.send(likes.rows);
+			}
+		}
 
-                likes.rows[0].whoLiked = `Você, ${other} e outras ${parseInt(likes.rows[0].count) - 2} pessoas`;
+		if (whoLiked.rows.length > 2) {
+			if (userLike.rows.length !== 0) {
+				isLiked = true;
+				likes.rows[0].isLiked = isLiked;
 
-                return res.send(likes.rows)
-            } else { 
-                likes.rows[0].isLiked = isLiked;
-                likes.rows[0].whoLiked = `${whoLiked.rows[0].userName}, ${whoLiked.rows[1].userName} e outras ${parseInt(likes.rows[0].count) - 2} pessoas`;
+				let other;
+				if (whoLiked.rows[0].id === userId) {
+					other = whoLiked.rows[1].userName;
+				} else {
+					other = whoLiked.rows[0].userName;
+				}
 
-                return res.send(likes.rows)
-            }
-        }
+				likes.rows[0].whoLiked = `Você, ${other} e outras ${
+					parseInt(likes.rows[0].count) - 2
+				} pessoas`;
 
-    } catch (error) {
-        res.sendStatus(500)
-    }
+				return res.send(likes.rows);
+			} else {
+				likes.rows[0].isLiked = isLiked;
+				likes.rows[0].whoLiked = `${whoLiked.rows[0].userName}, ${
+					whoLiked.rows[1].userName
+				} e outras ${parseInt(likes.rows[0].count) - 2} pessoas`;
 
+				return res.send(likes.rows);
+			}
+		}
+	} catch (error) {
+		res.sendStatus(500);
+	}
 }
 
 export async function deletePosts(req, res) {
-    const {id} = req.params;
+	const { id } = req.params;
 
-    try {
-        await postsRepository.deletePosts(id);
-      
-        res.sendStatus(200);
+	try {
+		await postsRepository.deletePosts(id);
 
-    } catch (error) {
-        res.sendStatus(500);
-    }
+		res.sendStatus(200);
+	} catch (error) {
+		res.sendStatus(500);
+	}
 }
 
-export async function updatePosts(req, res){
-    const {id: postId} = req.params;
-    const {description} = req.body;
+export async function updatePosts(req, res) {
+	const { id: postId } = req.params;
+	const { description } = req.body;
 
-    const descriptionResolve = addSpaceHashtagsStuck(description);
+	const descriptionResolve = addSpaceHashtagsStuck(description);
 
-    const hashtags = (descriptionResolve.includes("#") ? (
-        descriptionResolve.match(/#[^\s#\.\;]*/gmi).map(x => x.substr(1).toLowerCase()) 
-    ) : []);
+	const hashtags = descriptionResolve.includes('#')
+		? descriptionResolve
+				.match(/#[^\s#\.\;]*/gim)
+				.map((x) => x.substr(1).toLowerCase())
+		: [];
 
-    try {
-        await postsRepository.deleteHashtagsByPostId(postId);
+	try {
+		await postsRepository.deleteHashtagsByPostId(postId);
 
-        await postsRepository.updatePosts(descriptionResolve, postId);
-    
-        await insertHashtags(hashtags, postId);
+		await postsRepository.updatePosts(descriptionResolve, postId);
 
-        res.sendStatus(200);
+		await insertHashtags(hashtags, postId);
 
-    } catch (error) {
-        res.sendStatus(500);
-    }
+		res.sendStatus(200);
+	} catch (error) {
+		res.sendStatus(500);
+	}
 }
 
-export async function repost(req, res){
-    const { userId, postId, userPosted } = req.body;
+export async function repost(req, res) {
+	const { userId, postId, userPosted } = req.body;
 
-    try {
-        await postsRepository.insertRepost(userId, postId, userPosted);
+	try {
+		await postsRepository.insertRepost(userId, postId, userPosted);
 
-        res.sendStatus(201);
-    } catch (error) {
-        res.sendStatus(500);
-    }
+		res.sendStatus(201);
+	} catch (error) {
+		res.sendStatus(500);
+	}
 }
 
-export async function getReposts(req, res){
-    const { postId } = req.params;
+export async function getReposts(req, res) {
+	const { postId } = req.params;
 
-    try {
-        const promise = await postsRepository.getReposts(postId);
-    
-        res.send(promise.rows)
-    } catch (error) {
-        res.sendStatus(500);
-    }
+	try {
+		const promise = await postsRepository.getReposts(postId);
+
+		res.send(promise.rows);
+	} catch (error) {
+		res.sendStatus(500);
+	}
 }
